@@ -4,3 +4,5 @@ mock
 # Debugging
 pudb
 ipython
+
+pytest

@@ -1,10 +1,12 @@
 """
 Tests for the scrypt wrapper.
 """
-from json import dumps, loads
+from json import dumps
 from scrypt import hash
 from twisted.trial import unittest
 from txscrypt import wrapper as w
+
+from base64 import b64encode
 
 
 class WrapperTests(unittest.TestCase):
@@ -22,14 +24,14 @@ class WrapperTests(unittest.TestCase):
         self.wrapper.urandom = self._urandom
 
         self.storedParams = {"N": 1234, "r": 10, "p": 10}
-        key, salt = [s.encode("base64").strip() for s in ["KEY", "SALT"]]
-        params = dumps(self.storedParams)
-        self.stored = "txscrypt${0}${1}${2}".format(params, key, salt)
+        key, salt = [b64encode(s).strip() for s in [b"KEY", b"SALT"]]
+        params = dumps(self.storedParams).encode("ascii")
+        self.stored = b"txscrypt$" + b"$".join([params, key, salt])
 
 
     def _urandom(self, n):
         self.randomBytesRequested = n
-        return "SALT" # YOLO
+        return b"SALT" # YOLO
 
 
     def test_startAndStopThreadPool(self):
@@ -55,7 +57,7 @@ class WrapperTests(unittest.TestCase):
         phase, eventType, f, args, kwargs = self.reactor.eventTriggers[0]
         self.assertEqual(phase, "before")
         self.assertEqual(eventType, "shutdown")
-        self.assertEqual(f.im_func, self.threadPool.stop.im_func)
+        self.assertEqual(f.__func__, self.threadPool.stop.__func__)
         self.assertEqual(args, ())
         self.assertEqual(kwargs, {})
 
@@ -76,9 +78,9 @@ class WrapperTests(unittest.TestCase):
         substring is in the error message.
 
         """
-        d = self.wrapper.checkPassword(storedValue, "")
+        d = self.wrapper.checkPassword(storedValue, b"")
         failure = self.failureResultOf(d, ValueError)
-        self.assertIn(substring, failure.value.message)
+        self.assertIn(substring, str(failure.value))
 
 
     def test_raisesOnIncorrectNumberOfFields(self):
@@ -86,9 +88,16 @@ class WrapperTests(unittest.TestCase):
         fails with ValueError.
 
         """
-        self.assertFailsWithValueError("$", "fields")
-        self.assertFailsWithValueError("$$", "fields")
-        self.assertFailsWithValueError("$$$$", "fields")
+        self.assertFailsWithValueError(b"$", "fields")
+        self.assertFailsWithValueError(b"$$", "fields")
+        self.assertFailsWithValueError(b"$$$$", "fields")
+
+
+    def test_raisesOnUnicode(self):
+        """
+        The wrapper only accepts bytes.
+        """
+        self.assertFailsWithValueError(u"foo", "bytes")
 
 
     def test_raisesOnBadComment(self):
@@ -96,7 +105,7 @@ class WrapperTests(unittest.TestCase):
         ValueError.
 
         """
-        self.assertFailsWithValueError("BOGUS$$$", "prefix")
+        self.assertFailsWithValueError(b"BOGUS$$$", "prefix")
 
 
     def assertHashCalled(self, password, salt, expectedParams):
@@ -116,16 +125,25 @@ class WrapperTests(unittest.TestCase):
         The default parameters are passed to the hash function.
 
         """
-        self.threadPool.result = "KEY"
+        self.threadPool.result = b"KEY"
 
-        d = self.wrapper.computeKey("THE_PASSWORD")
+        d = self.wrapper.computeKey(b"THE_PASSWORD")
         result = self.successResultOf(d)
 
-        self.assertEqual(result, 'txscrypt${"N": 5926}$S0VZ$U0FMVA==')
+        self.assertEqual(result, b'txscrypt${"N": 5926}$S0VZ$U0FMVA==')
 
-        self.assertHashCalled("THE_PASSWORD", "SALT", self.wrapper._params)
+        self.assertHashCalled(b"THE_PASSWORD", b"SALT", self.wrapper._params)
         self.assertEqual(self.randomBytesRequested, self.wrapper.saltLength)
         self.assertThreadPoolStartedAndStopScheduled()
+
+
+    def test_computeKeyRaisesOnUnicode(self):
+        """
+        The wrapper only accepts bytes.
+        """
+        d = self.wrapper.computeKey(u"UNICODE")
+        failure = self.failureResultOf(d, ValueError)
+        self.assertIn("bytes", str(failure.value))
 
 
     def test_computeKeyMultipleTimes(self):
@@ -142,12 +160,12 @@ class WrapperTests(unittest.TestCase):
         encoded in the stored value are passed to the hash function.
 
         """
-        self.threadPool.result = "KEY"
+        self.threadPool.result = b"KEY"
 
-        d = self.wrapper.checkPassword(self.stored, "THE_PASSWORD")
+        d = self.wrapper.checkPassword(self.stored, b"THE_PASSWORD")
         self.assertTrue(self.successResultOf(d))
 
-        self.assertHashCalled("THE_PASSWORD", "SALT", self.storedParams)
+        self.assertHashCalled(b"THE_PASSWORD", b"SALT", self.storedParams)
         self.assertEqual(self.randomBytesRequested, None)
         self.assertThreadPoolStartedAndStopScheduled()
 
@@ -158,12 +176,12 @@ class WrapperTests(unittest.TestCase):
         False. The thread pool is started as necessary. The parameters
         encoded in the stored value are passed to the hash function.
         """
-        self.threadPool.result = "DIFFERENT_KEY"
+        self.threadPool.result = b"DIFFERENT_KEY"
 
-        d = self.wrapper.checkPassword(self.stored, "FAKE_PASSWORD")
+        d = self.wrapper.checkPassword(self.stored, b"FAKE_PASSWORD")
         self.assertFalse(self.successResultOf(d))
 
-        self.assertHashCalled("FAKE_PASSWORD", "SALT", self.storedParams)
+        self.assertHashCalled(b"FAKE_PASSWORD", b"SALT", self.storedParams)
         self.assertEqual(self.randomBytesRequested, None)
         self.assertThreadPoolStartedAndStopScheduled()
 
@@ -261,8 +279,8 @@ class DefaultWrapperTests(unittest.TestCase):
         The module-level API functions are methods of the wrapper.
         """
         for a in ["computeKey", "checkPassword"]:
-            moduleLevel = getattr(w, a).im_func
-            instanceLevel = getattr(w._wrapper, a).im_func
+            moduleLevel = getattr(w, a).__func__
+            instanceLevel = getattr(w._wrapper, a).__func__
             self.assertIdentical(moduleLevel, instanceLevel)
 
 

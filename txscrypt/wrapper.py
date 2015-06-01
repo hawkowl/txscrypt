@@ -1,6 +1,8 @@
 """
 Wrapper around scrypt.
 """
+from __future__ import absolute_import, division
+
 from json import dumps, loads
 from os import urandom
 from scrypt import hash
@@ -8,6 +10,10 @@ from twisted.internet import defer, reactor
 from twisted.internet.threads import deferToThreadPool
 from twisted.python import threadpool
 
+from base64 import b64encode, b64decode
+
+
+STORAGESEPARATOR = b"$"
 
 class Wrapper(object):
     urandom = staticmethod(urandom)
@@ -43,16 +49,21 @@ class Wrapper(object):
         recognized as a txscrypt value.
 
         """
+        if not isinstance(stored, bytes) or not isinstance(provided, bytes):
+            return defer.fail(
+                ValueError("Only able to compute hashes of bytes."))
+
         try:
-            comment, encodedParams, encodedKey, encodedSalt = stored.split("$")
+            comment, encodedParams, encodedKey, encodedSalt = stored.split(
+                STORAGESEPARATOR)
         except ValueError:
             return defer.fail(ValueError("Invalid number of fields"))
 
-        if comment != "txscrypt":
+        if comment != b"txscrypt":
             return defer.fail(ValueError("Missing txscrypt prefix"))
 
-        params = loads(encodedParams)
-        key, salt = [s.decode("base64") for s in [encodedKey, encodedSalt]]
+        params = loads(encodedParams.decode("ascii"))
+        key, salt = [b64decode(s) for s in [encodedKey, encodedSalt]]
         d = self._deferToThread(hash, provided, salt, **params)
         return d.addCallback(key.__eq__)
 
@@ -60,8 +71,11 @@ class Wrapper(object):
     def computeKey(self, password):
         """Computes a key from the password using a secure key derivation
         function.
-
         """
+        if not isinstance(password, bytes):
+            return defer.fail(
+                ValueError("Only able to compute hashes of bytes."))
+
         salt = self.urandom(self.saltLength)
         d = self._deferToThread(hash, password, salt, **self._params)
         return d.addCallback(self._encode, salt)
@@ -71,8 +85,10 @@ class Wrapper(object):
         """Encodes the computed key, salt and parameters.
 
         """
-        key, salt = [s.encode("base64").strip() for s in [key, salt]]
-        return "txscrypt${0}${1}${2}".format(dumps(self._params), key, salt)
+        key, salt = [b64encode(s).strip() for s in [key, salt]]
+        # The parameters will always be ASCII encodable.
+        params = dumps(self._params).encode("ascii")
+        return b"txscrypt$" + STORAGESEPARATOR.join([params, key, salt])
 
 
 
